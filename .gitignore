@@ -1,0 +1,14 @@
+*.mp4
+*.jpg
+*.JPG
+*.xml
+*.pt
+*.png
+*.pyc
+*.checkpoints
+
+data/train/
+data/val
+yolov7_custom/
+tools/
+runs/
