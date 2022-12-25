@@ -2,6 +2,7 @@
 *.jpg
 *.JPG
 *.xml
+*.txt
 *.pt
 *.png
 *.pyc

@@ -9,7 +9,7 @@ from random import randint
 import torch.backends.cudnn as cudnn
 
 from models.experimental import attempt_load
-from utils.datasets import LoadStreams, LoadImages
+from utils.datasets import LoadStreams, LoadImages, letterbox
 from utils.general import check_img_size, check_requirements, \
                 check_imshow, non_max_suppression, apply_classifier, \
                 scale_coords, xyxy2xywh, strip_optimizer, set_logging, \
@@ -59,12 +59,25 @@ def draw_boxes(img, bbox, identities=None, categories=None, names=None,offset=(0
                     0.6, [255, 255, 255], 1)
         # cv2.circle(img, data, 6, color,-1)
     return img
+
+def draw_boxes_second(img, bbox,offset=(0, 0)):
+    for i, box in enumerate(bbox):
+        x1, y1, x2, y2 = [int(i) for i in box]
+        x1 += offset[0]
+        x2 += offset[0]
+        y1 += offset[1]
+        y2 += offset[1]
+
+        data = (int((box[0]+box[2])/2),(int((box[1]+box[3])/2)))
+        cv2.rectangle(img, (x1, y1), (x2, y2), (0,0,255), 2)
+
+    return img
 #..............................................................................
 
 
 def detect(save_img=False):
     
-    source, weights, view_img, save_txt, imgsz, trace, colored_trk, save_bbox_dim= opt.source, opt.weights, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace, opt.colored_trk, opt.save_bbox_dim
+    source, weights, weights_second, view_img, save_txt, imgsz, trace, colored_trk, save_bbox_dim= opt.source, opt.weights, opt.weights_second, opt.view_img, opt.save_txt, opt.img_size, not opt.no_trace, opt.colored_trk, opt.save_bbox_dim
     save_img = not opt.nosave and not source.endswith('.txt')  # save inference images
     webcam = source.isnumeric() or source.endswith('.txt') or source.lower().startswith(
         ('rtsp://', 'rtmp://', 'http://', 'https://'))
@@ -92,12 +105,23 @@ def detect(save_img=False):
     model = attempt_load(weights, map_location=device)  # load FP32 model
     stride = int(model.stride.max())  # model stride
     imgsz = check_img_size(imgsz, s=stride)  # check img_size
+    
+    # Load second stage model if required
+    if len(weights_second)>0:
+            # Load model
+            print('Loading second model')
+            model_second = attempt_load(weights_second, map_location=device)  # load FP32 model
+        
 
     if trace:
         model = TracedModel(model, device, opt.img_size)
+        
+    # print(f"model1: {model}")
+    # print(f"model2: {model_second}")
 
     if half:
         model.half()  # to FP16
+        model_second.half()
 
     # Second-stage classifier
     classify = False
@@ -117,10 +141,13 @@ def detect(save_img=False):
     # Get names and colors
     names = model.module.names if hasattr(model, 'module') else model.names
     colors = [[random.randint(0, 255) for _ in range(3)] for _ in names]
+    
+    print(f"Names: {names}")
 
     # Run inference
     if device.type != 'cpu':
         model(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model.parameters())))  # run once
+        model_second(torch.zeros(1, 3, imgsz, imgsz).to(device).type_as(next(model_second.parameters())))  # run once
     old_img_w = old_img_h = imgsz
     old_img_b = 1
 
@@ -141,11 +168,15 @@ def detect(save_img=False):
    
     for path, img, im0s, vid_cap in dataset:
         start_time = time.time()
+        # print(type(im0s))
+        # print(im0s)
         img = torch.from_numpy(img).to(device)
         img = img.half() if half else img.float()  # uint8 to fp16/32
         img /= 255.0  # 0 - 255 to 0.0 - 1.0
+        # print(img)
         if img.ndimension() == 3:
             img = img.unsqueeze(0)
+            
 
         # Warmup
         if device.type != 'cpu' and (old_img_b != img.shape[0] or old_img_h != img.shape[2] or old_img_w != img.shape[3]):
@@ -154,10 +185,12 @@ def detect(save_img=False):
             old_img_w = img.shape[3]
             for i in range(3):
                 model(img, augment=opt.augment)[0]
+                # model_second(img, augment=opt.augment)[0]
 
         # Inference
         t1 = time_synchronized()
         pred = model(img, augment=opt.augment)[0]
+        # pred2 = model_second(img, augment=opt.augment)[0]
         t2 = time_synchronized()
 
         # Apply NMS
@@ -167,6 +200,18 @@ def detect(save_img=False):
         # Apply Classifier
         if classify:
             pred = apply_classifier(pred, modelc, img, im0s)
+            
+        # for i, detection in enumerate(pred[0]):
+        #     if len(detection)>0:
+        #         output = detection.tolist()[:4]
+        #         output = [int(x) for x in output]
+        #         cropped = im0s[output[1]:output[3], output[0]:output[2]]
+        #         print(f"OUTPUT 1: {output}")
+        #         # print(output[1]:output[3], output[0]:output[2])
+                
+        #         # print(f"MINE!{np.array([output]).shape}")
+                
+        #         draw_boxes_second(im0s, np.array([output]), [2] , [0], 'Hello')
 
         # Process detections
         for i, det in enumerate(pred):  # detections per image
@@ -174,6 +219,11 @@ def detect(save_img=False):
                 p, s, im0, frame = path[i], '%g: ' % i, im0s[i].copy(), dataset.count
             else:
                 p, s, im0, frame = path, '', im0s, getattr(dataset, 'frame', 0)
+                print(im0.shape)
+                # if len(det[0])>0:
+                #     output = det[0].tolist()[:4]
+                #     print(output)
+                
 
             p = Path(p)  # to Path
             save_path = str(save_dir / p.name)  # img.jpg
@@ -181,7 +231,16 @@ def detect(save_img=False):
             gn = torch.tensor(im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
             if len(det):
                 # Rescale boxes from img_size to im0 size
+                orig_det = det
+                orig_det = orig_det[:, :4].tolist()[0]
+                orig_det = [int(x) for x in orig_det]
+                                
+                
                 det[:, :4] = scale_coords(img.shape[2:], det[:, :4], im0.shape).round()
+                output = det[:, :4].tolist()[0]
+                output = [int(x) for x in output]
+                # draw_boxes_second(im0s, np.array([output]), [2] , [0], 'Hello')
+                # print(f"DET!!!!{np.array([output])}")
                 
                 end_time_det = time.time()
                 
@@ -196,45 +255,93 @@ def detect(save_img=False):
                 
                 # NOTE: We send in detected object class too
                 for x1,y1,x2,y2,conf,detclass in det.cpu().detach().numpy():
+                    # print(x1,y1,x2,y2)
                     dets_to_sort = np.vstack((dets_to_sort, 
                                 np.array([x1, y1, x2, y2, conf, detclass])))
-                    print(dets_to_sort)               
+                    
+                
                 # Run SORT
                 tracked_dets = sort_tracker.update(dets_to_sort)
                 tracks =sort_tracker.getTrackers()
 
                 txt_str = ""
 
-                #loop over tracks
-                for track in tracks:
-                    # color = compute_color_for_labels(id)
-                    #draw colored tracks
-                    if colored_trk:
-                        [cv2.line(im0, (int(track.centroidarr[i][0]),
-                                    int(track.centroidarr[i][1])), 
-                                    (int(track.centroidarr[i+1][0]),
-                                    int(track.centroidarr[i+1][1])),
-                                    rand_color_list[track.id], thickness=2) 
-                                    for i,_ in  enumerate(track.centroidarr) 
-                                      if i < len(track.centroidarr)-1 ] 
-                    #draw same color tracks
-                    else:
-                        [cv2.line(im0, (int(track.centroidarr[i][0]),
-                                    int(track.centroidarr[i][1])), 
-                                    (int(track.centroidarr[i+1][0]),
-                                    int(track.centroidarr[i+1][1])),
-                                    (255,0,0), thickness=2) 
-                                    for i,_ in  enumerate(track.centroidarr) 
-                                      if i < len(track.centroidarr)-1 ] 
+                #*******************************#
+                # Second step
+                #*******************************#
+                # Crop out only the driver side of the detections
+                cropped_dets = dets_to_sort.copy()
+                cropped_dets[:, 2] = ((cropped_dets[:, 2]-cropped_dets[:, 0]) * 0.7) + cropped_dets[:, 0]
+                
+                
+                for i, det_second in enumerate(cropped_dets[:,:4]):
+                    print(f"{i, det_second}")
+
+                    det_second = [int(x) for x in det_second]
+                    # print(type(im0))
+                    # print(im0.shape)
+                    # Padded resize
+                    
+                    # Crop image
+                    cropped_im0 = im0[det_second[1]:det_second[3], det_second[0]:det_second[2]]
+                    
+                    img_second = letterbox(cropped_im0, imgsz, stride=stride)[0]
+                    # print(type(img_second))
+                    # print(img_second.shape)
+                    # Convert
+                    img_second = img_second[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+                    
+                    img_second = np.ascontiguousarray(img_second)
+                    img_second = torch.from_numpy(img_second).to(device)
+                    img_second = img_second.half() if half else img.float()  # uint8 to fp16/32
+                    img_second /= 255.0  # 0 - 255 to 0.0 - 1.0
+                    print(f"IMG second {img_second.shape}")
+                    # print(img)
+                    if img_second.ndimension() == 3:
+                        img_second = img_second.unsqueeze(0)
+                        
+                    pred_second = model_second(img_second, augment=opt.augment)[0]
+                    
+                    pred_second = non_max_suppression(pred_second, opt.conf_thres, opt.iou_thres, classes=opt.classes, agnostic=opt.agnostic_nms)
+                    
+                    
+                    # print(f"BOX!!{det_second}")
+                    # draw_boxes_second(im0, det_second)
+                    
+
+                # for det_second in dets_to_sort:
+                #     print(det_second[:4])
+
+                # #loop over tracks
+                # for track in tracks:
+                #     # color = compute_color_for_labels(id)
+                #     #draw colored tracks
+                #     if colored_trk:
+                #         [cv2.line(im0, (int(track.centroidarr[i][0]),
+                #                     int(track.centroidarr[i][1])), 
+                #                     (int(track.centroidarr[i+1][0]),
+                #                     int(track.centroidarr[i+1][1])),
+                #                     rand_color_list[track.id], thickness=2) 
+                #                     for i,_ in  enumerate(track.centroidarr) 
+                #                       if i < len(track.centroidarr)-1 ] 
+                #     #draw same color tracks
+                #     else:
+                #         [cv2.line(im0, (int(track.centroidarr[i][0]),
+                #                     int(track.centroidarr[i][1])), 
+                #                     (int(track.centroidarr[i+1][0]),
+                #                     int(track.centroidarr[i+1][1])),
+                #                     (255,0,0), thickness=2) 
+                #                     for i,_ in  enumerate(track.centroidarr) 
+                #                       if i < len(track.centroidarr)-1 ] 
                         
                     
                     
-                    if save_txt:
-                        # Normalize coordinates
-                        txt_str += "%i %i %f %f" % (track.id, track.detclass, track.centroidarr[-1][0] / im0.shape[1], track.centroidarr[-1][1] / im0.shape[0])
-                        if save_bbox_dim:
-                            txt_str += " %f %f" % (np.abs(track.bbox_history[-1][0] - track.bbox_history[-1][2]) / im0.shape[0], np.abs(track.bbox_history[-1][1] - track.bbox_history[-1][3]) / im0.shape[1])
-                        txt_str += "\n"
+                    # if save_txt:
+                    #     # Normalize coordinates
+                    #     txt_str += "%i %i %f %f" % (track.id, track.detclass, track.centroidarr[-1][0] / im0.shape[1], track.centroidarr[-1][1] / im0.shape[0])
+                    #     if save_bbox_dim:
+                    #         txt_str += " %f %f" % (np.abs(track.bbox_history[-1][0] - track.bbox_history[-1][2]) / im0.shape[0], np.abs(track.bbox_history[-1][1] - track.bbox_history[-1][3]) / im0.shape[1])
+                    #     txt_str += "\n"
                 
                 if save_txt:
                     with open(txt_path + '.txt', 'a') as f:
@@ -246,7 +353,29 @@ def detect(save_img=False):
                     identities = tracked_dets[:, 8]
                     categories = tracked_dets[:, 4]
                     draw_boxes(im0, bbox_xyxy, identities, categories, names)
-                #........................................................
+                                       
+                    
+                
+                for phone_det in pred_second:
+                    if len(phone_det):
+                        
+                        orig_det = det
+                        orig_det = orig_det[:, :4].tolist()[0]
+                        orig_det = [int(x) for x in orig_det]
+                                        
+
+                        phone_det[:, :4] = scale_coords(img_second.shape[2:], phone_det[:, :4], cropped_im0.shape).round()
+                        # output = det[:, :4].tolist()[0]
+                        # output = [int(x) for x in output]
+                        
+                        phone_det = phone_det[:, :4].tolist()[0]
+                        phone_det = [int(x) for x in phone_det]
+                        print(f'Phone DET: {phone_det}')
+                        draw_boxes_second(im0, [[det_second[0]+phone_det[0], det_second[1]+phone_det[1], 
+                                                            (phone_det[2]-phone_det[0]) + det_second[0]+phone_det[0],
+                                                            (phone_det[3]-phone_det[1])+det_second[1]+phone_det[1]]])
+                        
+
                 
             # Print time (inference + NMS)
             print(f'{s}Done. ({(1E3 * (t2 - t1)):.1f}ms) Inference, ({(1E3 * (t3 - t2)):.1f}ms) NMS')
@@ -305,6 +434,7 @@ def detect(save_img=False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--weights', nargs='+', type=str, default='yolov7.pt', help='model.pt path(s)')
+    parser.add_argument('--weights_second', nargs='+', type=str, default='', help='model.pt path(s)')
     # parser.add_argument('--download', action='store_true', help='download model weights automatically')
     # parser.add_argument('--no-download', dest='download', action='store_false',help='not download model weights if already exist')
     parser.add_argument('--source', type=str, default='inference/images', help='source')  # file/folder, 0 for webcam
@@ -342,3 +472,4 @@ if __name__ == '__main__':
                 strip_optimizer(opt.weights)
         else:
             detect()
+            
