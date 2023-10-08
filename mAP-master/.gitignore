@@ -1,1 +1,5 @@
 output/
+
+archive_weights/*
+archive/*
+*.pt

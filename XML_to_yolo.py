@@ -24,33 +24,32 @@ def yolo_to_xml_bbox(bbox, w, h):
     return [xmin, ymin, xmax, ymax]
 
 
-def run_xml_to_yolo(train=True):
+os.chdir("../../direct_sun/input")
 
+
+def run_xml_to_yolo_or_standard(train=True, to_yolo=False):
     classes = []
 
-
-    # create the labels folder (output directory)
-    try:
-        os.mkdir(output_dir)
-    except:
-        print('Output directry already exists')
-
     if train:
-        input_dir = "yolov7_custom/pascal/phone/"
-        output_dir = "data/train/phone/labels/"
-        image_dir = "data/train/phone/images/"
+        input_dir = "ground-truth/"
+        output_dir = "ground-truth/"
+        image_dir = "images-optional/"
     else:
         input_dir = "yolov7_custom/pascal_val/phone/"
         output_dir = "data/val/phone/labels/"
         image_dir = "data/val/phone/images/"
-        
+
+    # create the labels folder (output directory)
+    if not os.path.isdir(output_dir):
+        os.makedirs(output_dir)
+
     # identify all the xml files in the annotations folder (input directory)
-    files = glob.glob(os.path.join(input_dir, '*.xml'))
+    files = glob.glob(os.path.join(input_dir, "*.xml"))
     print(input_dir)
-    # loop through each 
+    # loop through each
     for fil in files:
         basename = os.path.basename(fil)
-        filename = os.path.splitext(basename)[0]    
+        filename = os.path.splitext(basename)[0]
         # print(filename)    # check if the label contains the corresponding image file
         if not os.path.exists(os.path.join(image_dir, f"{filename}.jpg")):
             print(f"{filename} image does not exist!")
@@ -64,28 +63,32 @@ def run_xml_to_yolo(train=True):
         width = int(root.find("size").find("width").text)
         height = int(root.find("size").find("height").text)
 
-        for obj in root.findall('object'):
+        for obj in root.findall("object"):
             label = obj.find("name").text
             # print(label)
             # check for new classes and append to list
             if label not in classes:
                 classes.append(label)
             index = classes.index(label)
-            pil_bbox = [int(x.text) for x in obj.find("bndbox")]
-            yolo_bbox = xml_to_yolo_bbox(pil_bbox, width, height)
-            print(pil_bbox)
+            bbox = [int(x.text) for x in obj.find("bndbox")]
+            print(label)
+            if to_yolo:
+                # Convert from standard to yolo
+                bbox = xml_to_yolo_bbox(bbox, width, height)
+                label = index
             # convert data to string
-            bbox_string = " ".join([str(x) for x in yolo_bbox])
-            result.append(f"{index} {bbox_string}")
+            bbox_string = " ".join([str(x) for x in bbox])
+            result.append(f"{label} {bbox_string}")
 
         if result:
             # generate a YOLO format text file for each xml file
-            with open(os.path.join(output_dir, f"{filename}.txt"), "w", encoding="utf-8") as f:
+            with open(
+                os.path.join(output_dir, f"{filename}.txt"), "w", encoding="utf-8"
+            ) as f:
                 f.write("\n".join(result))
-    print(classes)
     # generate the classes file as reference
-    with open('classes.txt', 'w', encoding='utf8') as f:
+    with open("classes.txt", "w", encoding="utf8") as f:
         f.write(json.dumps(classes))
-    
-    
-run_xml_to_yolo(train=True)
+
+
+run_xml_to_yolo_or_standard(train=True)

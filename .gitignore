@@ -7,6 +7,9 @@
 *.png
 *.pyc
 *.checkpoints
+*.avi
+*.cache
+*.webp
 
 data/train/
 data/val
